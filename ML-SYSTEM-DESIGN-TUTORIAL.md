@@ -449,3 +449,242 @@ Tracks deployment environment (staging/production/edge), deployment timestamp, t
 ### Model Cards
 
 Documentation stored in registry: model purpose, training data characteristics (size, distribution, biases), performance metrics and limitations, ethical considerations, maintenance schedule, contact information. Essential for governance, compliance, collaboration.
+
+
+# Chapter III: Model Training at Scale
+
+## Distributed Training
+
+Training large models on single GPU becomes infeasible due to memory and time constraints. Distributed training splits work across multiple devices.
+
+### Data Parallelism
+
+**Concept** - Same model replicated across devices. Each device processes different data batch. Gradients averaged across devices, weights updated synchronously.
+
+**Workflow:**
+1. Model replicated to all devices
+2. Each device gets different data batch
+3. Each computes forward pass and gradients
+4. Gradients aggregated (averaged) across devices
+5. Each device updates weights with averaged gradients
+6. Repeat for next batch
+
+**Synchronous Data Parallel** - All devices synchronize after each batch. Consistent but slow (waits for slowest device).
+
+**Asynchronous Data Parallel** - Devices update central parameter server independently. Faster but can lead to stale gradients and convergence issues.
+
+**Advantages** - Easy to implement. Linear speedup with number of devices (in theory). No model changes needed.
+
+**Limitations** - Communication overhead for gradient aggregation. Batch size scales with devices (may affect convergence). All-reduce operation bottleneck.
+
+**Implementations** - PyTorch DistributedDataParallel (DDP), TensorFlow MirroredStrategy, Horovod.
+
+### Model Parallelism
+
+**Concept** - Model split across devices. Each device holds different model layers. Data passes through devices sequentially.
+
+**Types:**
+
+**Tensor Parallelism** - Splits individual layers across devices. Example: Large matrix multiplication split into smaller operations. Each device computes subset of neurons. Requires frequent communication between devices.
+
+**Pipeline Parallelism** - Splits model into sequential stages. Each device holds consecutive layers. Data flows through pipeline. Micro-batching prevents pipeline bubbles (idle time).
+
+**Workflow:**
+1. Split model into stages (layers 1-10 on GPU0, 11-20 on GPU1)
+2. Divide batch into micro-batches
+3. GPU0 processes first micro-batch, passes activations to GPU1
+4. While GPU1 processes first micro-batch, GPU0 starts second
+5. Pipeline stays full, reduces bubble time
+
+**Advantages** - Enables training models larger than single device memory. No batch size increase required.
+
+**Limitations** - Pipeline bubbles reduce efficiency. Complex implementation. Requires careful layer partitioning.
+
+**Implementations** - GPipe, PipeDream, Megatron-LM.
+
+### Hybrid Parallelism
+
+Combines data and model parallelism. Model split across devices (model parallel), each partition replicated (data parallel). Common for largest models (GPT-3, GPT-4).
+
+Example: 8 GPUs, 4-way model parallel, 2-way data parallel. Model split into 4 parts, each replicated twice.
+
+### ZeRO (Zero Redundancy Optimizer)
+
+**Problem** - Optimizer states (Adam) consume 2-3x parameter memory. Each GPU stores full copy in data parallelism.
+
+**ZeRO Stages:**
+
+**ZeRO-1 (Optimizer State Partitioning)** - Partitions optimizer states across devices. Each device stores 1/N of optimizer states. 4x memory reduction for optimizer states.
+
+**ZeRO-2 (Gradient Partitioning)** - Also partitions gradients. Each device stores 1/N of gradients. 8x memory reduction combined.
+
+**ZeRO-3 (Parameter Partitioning)** - Also partitions parameters. Each device stores 1/N of parameters. Communicates parameters as needed. Near-linear memory scaling with devices.
+
+**ZeRO-Offload** - Offloads optimizer computation and states to CPU. Trades compute for GPU memory.
+
+**ZeRO-Infinity** - Offloads to NVMe storage. Enables trillion-parameter models.
+
+**Implementations** - DeepSpeed ZeRO, FairScale.
+
+---
+
+## Hyperparameter Optimization
+
+Hyperparameters control learning process but aren't learned from data. Examples: learning rate, batch size, number of layers, hidden units, dropout rate.
+
+### Search Strategies
+
+**Grid Search** - Exhaustively tries all combinations in predefined grid. Example: learning_rate = [0.001, 0.01, 0.1], batch_size = [32, 64]. Tests all 6 combinations. Simple but exponentially expensive. Not recommended for more than 3-4 hyperparameters.
+
+**Random Search** - Samples random combinations. Often finds good solutions faster than grid search. Can explore larger search space with same budget. Recommended over grid search.
+
+**Bayesian Optimization** - Builds probabilistic model of objective function. Uses acquisition function to select next hyperparameters. Balances exploration (uncertain regions) and exploitation (promising regions). Efficient for expensive evaluations. Tools: Optuna, Hyperopt, Ax.
+
+**Acquisition Functions:**
+- Expected Improvement (EI): Expected improvement over current best
+- Probability of Improvement (PI): Probability of improving over current best
+- Upper Confidence Bound (UCB): Mean + uncertainty bonus
+
+**Population-Based Training (PBT)** - Evolves population of models simultaneously. Periodically copies hyperparameters from better to worse models. Mutates hyperparameters during training. Enables online hyperparameter adaptation.
+
+**Successive Halving** - Allocates small budget to many configs. Eliminates bottom 50% after each round. Doubles budget for survivors. Continues until one remains.
+
+**Hyperband** - Extension of successive halving. Runs multiple successive halving brackets with different budget allocations. Robust to unknown optimal budget.
+
+**ASHA (Asynchronous Successive Halving)** - Asynchronous version for distributed optimization. Promotes/stops configurations asynchronously.
+
+### Hyperparameter Types
+
+**Continuous** - Learning rate, dropout rate, regularization strength. Search in log space for learning rate (0.0001 to 0.1).
+
+**Integer** - Number of layers, hidden units, batch size. Often powers of 2 for efficiency.
+
+**Categorical** - Optimizer (Adam, SGD, RMSprop), activation function (ReLU, GELU, Swish).
+
+**Conditional** - Depend on other hyperparameters. Example: momentum only relevant if optimizer=SGD.
+
+### Early Stopping
+
+Monitors validation metric during training. Stops if no improvement for patience epochs. Saves best model checkpoint. Prevents overfitting and saves computation.
+
+**Patience** - Number of epochs to wait without improvement. Too low: stops before convergence. Too high: wastes computation.
+
+### Multi-Fidelity Optimization
+
+Evaluates configurations with varying resource budgets. Low fidelity: Few epochs, small dataset subset. High fidelity: Full training. Quickly eliminates bad configurations with low fidelity. Invests computation in promising ones.
+
+---
+
+## Transfer Learning
+
+Leverages knowledge from pre-trained model (source task) for new task (target task). Particularly effective when target task has limited data.
+
+### Why Transfer Learning Works
+
+**Feature Reusability** - Early layers learn general features (edges, textures for images; syntax for NLP). Later layers learn task-specific features. Source and target tasks share underlying feature representations.
+
+**Low-Resource Settings** - Training from scratch requires large datasets. Transfer learning achieves good performance with small target datasets.
+
+### Transfer Learning Strategies
+
+**Feature Extraction (Frozen Features)** - Freeze all pre-trained layers. Train only new output layer on target task. Fast, requires minimal data. Use when target dataset very small (<1000 samples) and similar to source domain.
+
+**Fine-Tuning** - Initialize with pre-trained weights. Continue training on target task. Updates all or subset of layers. More powerful but requires more target data.
+
+**Fine-Tuning Strategies:**
+- Full Fine-Tuning: Update all layers. Use when sufficient target data (>10k samples).
+- Gradual Unfreezing: Start with frozen layers, gradually unfreeze from top to bottom. Prevents catastrophic forgetting.
+- Discriminative Fine-Tuning: Use different learning rates per layer. Lower LR for early layers (general features), higher for late layers (task-specific).
+- Chain-Thaw: Unfreeze and train one layer at a time from top to bottom.
+
+**Layer-Wise Learning Rates** - Early layers: LR = base_lr / 100 (small updates preserve general features). Middle layers: LR = base_lr / 10. Final layers: LR = base_lr (allow significant adaptation).
+
+### Domain Adaptation
+
+Source and target domains differ in distribution. Techniques bridge domain gap.
+
+**Feature-Level Adaptation** - Learns domain-invariant features. Domain Adversarial Neural Network (DANN): Adds domain classifier. Trains feature extractor to fool domain classifier. Features become domain-invariant.
+
+**Instance Weighting** - Reweights source samples to match target distribution. Assigns higher weight to source samples similar to target.
+
+**Self-Training** - Trains on source data. Generates pseudo-labels for target data with high confidence predictions. Retrains with source + pseudo-labeled target data. Iterates until convergence.
+
+### Multi-Task Learning
+
+Trains single model on multiple related tasks simultaneously. Shared layers learn common representations. Task-specific layers capture task-specific patterns.
+
+**Hard Parameter Sharing** - All tasks share hidden layers. Each task has separate output layer. Simple, prevents overfitting through shared representation.
+
+**Soft Parameter Sharing** - Each task has own parameters. Regularization encourages parameter similarity across tasks.
+
+**Advantages** - Improved generalization through multi-task regularization. Data-efficient (leverages data from all tasks). Single model serves multiple predictions.
+
+---
+
+## Few-Shot & Zero-Shot Learning
+
+### Few-Shot Learning
+
+Learns from very few examples per class (1-shot, 5-shot). Critical when data labeling expensive or rare classes exist.
+
+**Meta-Learning (Learning to Learn)** - Trains model to quickly adapt to new tasks. Model-Agnostic Meta-Learning (MAML): Finds initialization that adapts quickly with few gradient steps. Training alternates between support set (few examples for adaptation) and query set (evaluation).
+
+**Prototypical Networks** - Learns embedding space. Computes prototype (mean embedding) per class from support set. Classifies query by nearest prototype. Simple, effective for few-shot classification.
+
+**Siamese Networks** - Learns similarity between pairs. Trains on pairs with contrastive loss (similar pairs close, dissimilar far). At test, compares query to support examples.
+
+**Matching Networks** - Attention mechanism over support set. Classifies query based on weighted combination of support labels. Weights from attention scores.
+
+**Data Augmentation** - Critical for few-shot. Generates additional training examples. Task-specific augmentations (rotation, crop for images; paraphrasing for text).
+
+### Zero-Shot Learning
+
+Classifies without any labeled examples of target classes. Relies on auxiliary information (class descriptions, attributes, semantic embeddings).
+
+**Semantic Embeddings** - Maps images and class names to shared embedding space. Example: Word2Vec embeddings for class names. Model trained to align image features with class name embeddings.
+
+**Attribute-Based** - Defines classes by attributes. Example: "has stripes", "has four legs" for animals. Model predicts attributes, infers class from attribute combination.
+
+**Generative Models** - Generates synthetic examples for unseen classes. Conditional GAN with class embeddings. Generates images for unseen classes, trains classifier.
+
+**Vision-Language Models** - CLIP, ALIGN pre-trained on image-text pairs. Zero-shot: Provide text descriptions of classes as prompts. Model scores image-text similarity for classification.
+
+---
+
+## Continual Learning
+
+Model learns from stream of tasks/data over time. Challenges: catastrophic forgetting (new task overwrites old knowledge), task boundaries may be unknown.
+
+### Strategies
+
+**Regularization-Based** - Penalizes changes to important parameters from previous tasks.
+
+**Elastic Weight Consolidation (EWC)** - Computes parameter importance (Fisher Information) after each task. Adds regularization term penalizing changes to important parameters. Less important parameters free to adapt.
+
+**Synaptic Intelligence** - Tracks parameter importance online during training. Importance based on contribution to loss reduction.
+
+**Memory-Based (Replay)** - Stores subset of old task data. Replays during new task training. Prevents forgetting by interleaving old and new data.
+
+**Experience Replay** - Stores raw samples from previous tasks. Randomly samples from memory during training.
+
+**Generative Replay** - Trains generative model on previous tasks. Generates pseudo-samples instead of storing real ones. More memory-efficient.
+
+**Parameter Isolation** - Allocates separate parameters for each task.
+
+**Progressive Neural Networks** - Adds new column (sub-network) per task. Previous columns frozen. New column can use features from previous via lateral connections.
+
+**PackNet** - Trains on first task. Prunes less important weights. "Packs" second task into remaining capacity. Iterates for more tasks.
+
+**Dynamic Architectures** - Grows network as needed. Dynamically Expandable Network (DEN) adds neurons when capacity saturated. Selective retraining updates relevant parameters.
+
+**Task-Specific Heads** - Shared feature extractor, task-specific output layers. Requires task identity at test time.
+
+### Continual Learning Metrics
+
+**Average Accuracy** - Mean accuracy across all tasks after learning all tasks.
+
+**Forgetting** - Difference between peak accuracy on task and final accuracy after learning subsequent tasks. Measures catastrophic forgetting.
+
+**Forward Transfer** - Performance on new task benefiting from previous learning. Positive: new task learns faster. Negative: previous learning hurts.
+
+**Backward Transfer** - How learning new task affects previous task performance. Positive: new learning improves old tasks. Negative: new learning degrades old tasks.
