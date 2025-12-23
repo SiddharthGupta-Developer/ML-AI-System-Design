@@ -81,10 +81,8 @@
 - [Agent Evaluation](#agent-evaluation)
 
 ### **Chapter X: Production Case Studies**
-- [Fraud Detection System](#fraud-detection-system)
 - [Recommendation Engine](#recommendation-engine)
-- [Conversational AI Assistant](#conversational-ai-assistant)
-- [Real-time Translation](#real-time-translation)
+
 
 ---
 
