@@ -450,241 +450,247 @@ Tracks deployment environment (staging/production/edge), deployment timestamp, t
 
 Documentation stored in registry: model purpose, training data characteristics (size, distribution, biases), performance metrics and limitations, ethical considerations, maintenance schedule, contact information. Essential for governance, compliance, collaboration.
 
+# Chapter II: Data Engineering for ML
 
-# Chapter III: Model Training at Scale
+## Data Collection & Ingestion
 
-## Distributed Training
+### Data Sources
 
-Training large models on single GPU becomes infeasible due to memory and time constraints. Distributed training splits work across multiple devices.
+**Structured Data** - Relational databases (PostgreSQL, MySQL), data warehouses (Snowflake, BigQuery). Defined schemas, typed columns, relational integrity.
 
-### Data Parallelism
+**Semi-Structured Data** - JSON from APIs, XML, logs, CSV. Flexible schemas, nested structures, varying field presence.
 
-**Concept** - Same model replicated across devices. Each device processes different data batch. Gradients averaged across devices, weights updated synchronously.
+**Unstructured Data** - Text, images, videos, audio. No inherent structure, requires feature extraction.
 
-**Workflow:**
-1. Model replicated to all devices
-2. Each device gets different data batch
-3. Each computes forward pass and gradients
-4. Gradients aggregated (averaged) across devices
-5. Each device updates weights with averaged gradients
-6. Repeat for next batch
+**Streaming Data** - Real-time events from Kafka/Kinesis, IoT sensors, clickstreams. Continuous flow, temporal ordering.
 
-**Synchronous Data Parallel** - All devices synchronize after each batch. Consistent but slow (waits for slowest device).
+### Ingestion Patterns
 
-**Asynchronous Data Parallel** - Devices update central parameter server independently. Faster but can lead to stale gradients and convergence issues.
+**Batch Ingestion** - Scheduled periodic extraction. Uses ETL tools (Airflow, Prefect). Suitable for historical datasets.
 
-**Advantages** - Easy to implement. Linear speedup with number of devices (in theory). No model changes needed.
+**Change Data Capture (CDC)** - Tracks and streams database changes. Uses transaction logs (binlog, WAL). Captures inserts/updates/deletes. Tools: Debezium, Maxwell.
 
-**Limitations** - Communication overhead for gradient aggregation. Batch size scales with devices (may affect convergence). All-reduce operation bottleneck.
+**API Ingestion** - Pulls data from REST/GraphQL APIs. Implements rate limiting, retry logic, pagination.
 
-**Implementations** - PyTorch DistributedDataParallel (DDP), TensorFlow MirroredStrategy, Horovod.
+**Event Streaming** - Consumes real-time events from message queues. Uses consumer groups for parallel processing.
 
-### Model Parallelism
+### Schema Management
 
-**Concept** - Model split across devices. Each device holds different model layers. Data passes through devices sequentially.
+**Schema Evolution** - Handles changes: adding fields (backward compatible), removing fields (forward compatible), changing types (breaking). Uses schema registry (Avro, Protobuf).
 
-**Types:**
-
-**Tensor Parallelism** - Splits individual layers across devices. Example: Large matrix multiplication split into smaller operations. Each device computes subset of neurons. Requires frequent communication between devices.
-
-**Pipeline Parallelism** - Splits model into sequential stages. Each device holds consecutive layers. Data flows through pipeline. Micro-batching prevents pipeline bubbles (idle time).
-
-**Workflow:**
-1. Split model into stages (layers 1-10 on GPU0, 11-20 on GPU1)
-2. Divide batch into micro-batches
-3. GPU0 processes first micro-batch, passes activations to GPU1
-4. While GPU1 processes first micro-batch, GPU0 starts second
-5. Pipeline stays full, reduces bubble time
-
-**Advantages** - Enables training models larger than single device memory. No batch size increase required.
-
-**Limitations** - Pipeline bubbles reduce efficiency. Complex implementation. Requires careful layer partitioning.
-
-**Implementations** - GPipe, PipeDream, Megatron-LM.
-
-### Hybrid Parallelism
-
-Combines data and model parallelism. Model split across devices (model parallel), each partition replicated (data parallel). Common for largest models (GPT-3, GPT-4).
-
-Example: 8 GPUs, 4-way model parallel, 2-way data parallel. Model split into 4 parts, each replicated twice.
-
-### ZeRO (Zero Redundancy Optimizer)
-
-**Problem** - Optimizer states (Adam) consume 2-3x parameter memory. Each GPU stores full copy in data parallelism.
-
-**ZeRO Stages:**
-
-**ZeRO-1 (Optimizer State Partitioning)** - Partitions optimizer states across devices. Each device stores 1/N of optimizer states. 4x memory reduction for optimizer states.
-
-**ZeRO-2 (Gradient Partitioning)** - Also partitions gradients. Each device stores 1/N of gradients. 8x memory reduction combined.
-
-**ZeRO-3 (Parameter Partitioning)** - Also partitions parameters. Each device stores 1/N of parameters. Communicates parameters as needed. Near-linear memory scaling with devices.
-
-**ZeRO-Offload** - Offloads optimizer computation and states to CPU. Trades compute for GPU memory.
-
-**ZeRO-Infinity** - Offloads to NVMe storage. Enables trillion-parameter models.
-
-**Implementations** - DeepSpeed ZeRO, FairScale.
+**Schema Validation** - Validates incoming data against expected schema. Checks data types, required fields, value ranges.
 
 ---
 
-## Hyperparameter Optimization
+## Data Quality & Validation
 
-Hyperparameters control learning process but aren't learned from data. Examples: learning rate, batch size, number of layers, hidden units, dropout rate.
+### Data Quality Dimensions
 
-### Search Strategies
+**Completeness** - Presence of required data. Metrics: null rate, missing value percentage.
 
-**Grid Search** - Exhaustively tries all combinations in predefined grid. Example: learning_rate = [0.001, 0.01, 0.1], batch_size = [32, 64]. Tests all 6 combinations. Simple but exponentially expensive. Not recommended for more than 3-4 hyperparameters.
+**Accuracy** - Correctness of values. Checks: value ranges, format validation, referential integrity.
 
-**Random Search** - Samples random combinations. Often finds good solutions faster than grid search. Can explore larger search space with same budget. Recommended over grid search.
+**Consistency** - Agreement across sources. Validates: cross-field dependencies, temporal consistency.
 
-**Bayesian Optimization** - Builds probabilistic model of objective function. Uses acquisition function to select next hyperparameters. Balances exploration (uncertain regions) and exploitation (promising regions). Efficient for expensive evaluations. Tools: Optuna, Hyperopt, Ax.
+**Timeliness** - Data freshness. Monitors: ingestion lag, update frequency.
 
-**Acquisition Functions:**
-- Expected Improvement (EI): Expected improvement over current best
-- Probability of Improvement (PI): Probability of improving over current best
-- Upper Confidence Bound (UCB): Mean + uncertainty bonus
+**Uniqueness** - Absence of duplicates. Detects exact and fuzzy duplicates.
 
-**Population-Based Training (PBT)** - Evolves population of models simultaneously. Periodically copies hyperparameters from better to worse models. Mutates hyperparameters during training. Enables online hyperparameter adaptation.
+### Validation Techniques
 
-**Successive Halving** - Allocates small budget to many configs. Eliminates bottom 50% after each round. Doubles budget for survivors. Continues until one remains.
+**Statistical Validation** - Compares distribution to historical baselines. Monitors mean, median, standard deviation, percentiles. Outlier detection using IQR or z-scores.
 
-**Hyperband** - Extension of successive halving. Runs multiple successive halving brackets with different budget allocations. Robust to unknown optimal budget.
+**Rule-Based Validation** - Applies business rules: age between 0-120, email regex pattern, positive amounts, referential integrity.
 
-**ASHA (Asynchronous Successive Halving)** - Asynchronous version for distributed optimization. Promotes/stops configurations asynchronously.
+**Constraint Validation** - Enforces NOT NULL, UNIQUE, CHECK constraints, foreign keys.
 
-### Hyperparameter Types
+### Handling Data Quality Issues
 
-**Continuous** - Learning rate, dropout rate, regularization strength. Search in log space for learning rate (0.0001 to 0.1).
+**Missing Values:**
+- Deletion: Remove records (risk: reduces size, introduces bias)
+- Mean/Median Imputation: Fill with central tendency (assumes MAR - Missing At Random)
+- Mode Imputation: Most frequent value for categorical
+- Forward Fill: Use previous value (time-series)
+- Model-Based Imputation: MICE (Multiple Imputation by Chained Equations)
+- Missingness Indicator: Binary flag preserving missingness pattern signal
 
-**Integer** - Number of layers, hidden units, batch size. Often powers of 2 for efficiency.
+**Outliers:**
+- Capping/Winsorizing: Replace beyond thresholds with threshold values
+- Transformation: Log/sqrt to compress range
+- Removal: Delete extremes (loses information)
+- Separate Model: Different models for outliers vs normal
 
-**Categorical** - Optimizer (Adam, SGD, RMSprop), activation function (ReLU, GELU, Swish).
+**Duplicates:**
+- Exact: Remove based on key columns
+- Fuzzy: Similarity matching (Levenshtein distance, Jaccard similarity)
 
-**Conditional** - Depend on other hyperparameters. Example: momentum only relevant if optimizer=SGD.
-
-### Early Stopping
-
-Monitors validation metric during training. Stops if no improvement for patience epochs. Saves best model checkpoint. Prevents overfitting and saves computation.
-
-**Patience** - Number of epochs to wait without improvement. Too low: stops before convergence. Too high: wastes computation.
-
-### Multi-Fidelity Optimization
-
-Evaluates configurations with varying resource budgets. Low fidelity: Few epochs, small dataset subset. High fidelity: Full training. Quickly eliminates bad configurations with low fidelity. Invests computation in promising ones.
-
----
-
-## Transfer Learning
-
-Leverages knowledge from pre-trained model (source task) for new task (target task). Particularly effective when target task has limited data.
-
-### Why Transfer Learning Works
-
-**Feature Reusability** - Early layers learn general features (edges, textures for images; syntax for NLP). Later layers learn task-specific features. Source and target tasks share underlying feature representations.
-
-**Low-Resource Settings** - Training from scratch requires large datasets. Transfer learning achieves good performance with small target datasets.
-
-### Transfer Learning Strategies
-
-**Feature Extraction (Frozen Features)** - Freeze all pre-trained layers. Train only new output layer on target task. Fast, requires minimal data. Use when target dataset very small (<1000 samples) and similar to source domain.
-
-**Fine-Tuning** - Initialize with pre-trained weights. Continue training on target task. Updates all or subset of layers. More powerful but requires more target data.
-
-**Fine-Tuning Strategies:**
-- Full Fine-Tuning: Update all layers. Use when sufficient target data (>10k samples).
-- Gradual Unfreezing: Start with frozen layers, gradually unfreeze from top to bottom. Prevents catastrophic forgetting.
-- Discriminative Fine-Tuning: Use different learning rates per layer. Lower LR for early layers (general features), higher for late layers (task-specific).
-- Chain-Thaw: Unfreeze and train one layer at a time from top to bottom.
-
-**Layer-Wise Learning Rates** - Early layers: LR = base_lr / 100 (small updates preserve general features). Middle layers: LR = base_lr / 10. Final layers: LR = base_lr (allow significant adaptation).
-
-### Domain Adaptation
-
-Source and target domains differ in distribution. Techniques bridge domain gap.
-
-**Feature-Level Adaptation** - Learns domain-invariant features. Domain Adversarial Neural Network (DANN): Adds domain classifier. Trains feature extractor to fool domain classifier. Features become domain-invariant.
-
-**Instance Weighting** - Reweights source samples to match target distribution. Assigns higher weight to source samples similar to target.
-
-**Self-Training** - Trains on source data. Generates pseudo-labels for target data with high confidence predictions. Retrains with source + pseudo-labeled target data. Iterates until convergence.
-
-### Multi-Task Learning
-
-Trains single model on multiple related tasks simultaneously. Shared layers learn common representations. Task-specific layers capture task-specific patterns.
-
-**Hard Parameter Sharing** - All tasks share hidden layers. Each task has separate output layer. Simple, prevents overfitting through shared representation.
-
-**Soft Parameter Sharing** - Each task has own parameters. Regularization encourages parameter similarity across tasks.
-
-**Advantages** - Improved generalization through multi-task regularization. Data-efficient (leverages data from all tasks). Single model serves multiple predictions.
+**Data Drift Detection:**
+- Monitors distribution changes over time
+- Statistical tests: Kolmogorov-Smirnov, Chi-square
+- Divergence metrics: KL divergence, JS divergence, Wasserstein distance
+- Triggers retraining when drift exceeds threshold
 
 ---
 
-## Few-Shot & Zero-Shot Learning
+## Feature Engineering
 
-### Few-Shot Learning
+### Numeric Transformations
 
-Learns from very few examples per class (1-shot, 5-shot). Critical when data labeling expensive or rare classes exist.
+**Log Transform** - Handles skewed distributions. log(x + 1) handles zeros.
 
-**Meta-Learning (Learning to Learn)** - Trains model to quickly adapt to new tasks. Model-Agnostic Meta-Learning (MAML): Finds initialization that adapts quickly with few gradient steps. Training alternates between support set (few examples for adaptation) and query set (evaluation).
+**Power Transform** - Box-Cox (positive values), Yeo-Johnson (handles negative).
 
-**Prototypical Networks** - Learns embedding space. Computes prototype (mean embedding) per class from support set. Classifies query by nearest prototype. Simple, effective for few-shot classification.
+**Polynomial Features** - x², x³, interactions (x1 * x2).
 
-**Siamese Networks** - Learns similarity between pairs. Trains on pairs with contrastive loss (similar pairs close, dissimilar far). At test, compares query to support examples.
+**Binning/Discretization** - Converts continuous to categorical. Equal-width or equal-frequency bins.
 
-**Matching Networks** - Attention mechanism over support set. Classifies query based on weighted combination of support labels. Weights from attention scores.
+### Categorical Encoding
 
-**Data Augmentation** - Critical for few-shot. Generates additional training examples. Task-specific augmentations (rotation, crop for images; paraphrasing for text).
+**Label Encoding** - Maps categories to integers. For ordinal variables only.
 
-### Zero-Shot Learning
+**One-Hot Encoding** - Binary column per category. Use when <20 categories.
 
-Classifies without any labeled examples of target classes. Relies on auxiliary information (class descriptions, attributes, semantic embeddings).
+**Target Encoding** - Replaces category with mean target for that category. Risk: leakage, needs regularization.
 
-**Semantic Embeddings** - Maps images and class names to shared embedding space. Example: Word2Vec embeddings for class names. Model trained to align image features with class name embeddings.
+**Frequency Encoding** - Replaces with frequency/proportion in dataset.
 
-**Attribute-Based** - Defines classes by attributes. Example: "has stripes", "has four legs" for animals. Model predicts attributes, infers class from attribute combination.
+**Binary Encoding** - Converts to binary representation. Efficient for high cardinality.
 
-**Generative Models** - Generates synthetic examples for unseen classes. Conditional GAN with class embeddings. Generates images for unseen classes, trains classifier.
+**Hashing Trick** - Hashes categories to fixed-size vector. Handles unknown categories.
 
-**Vision-Language Models** - CLIP, ALIGN pre-trained on image-text pairs. Zero-shot: Provide text descriptions of classes as prompts. Model scores image-text similarity for classification.
+### Text Features
+
+**Bag-of-Words** - Count of each word. Sparse, high-dimensional.
+
+**TF-IDF** - Term Frequency - Inverse Document Frequency. Down-weights common words.
+
+**N-grams** - Captures sequences (bigrams, trigrams). "machine learning" as single feature.
+
+**Word Embeddings** - Dense vectors (Word2Vec, GloVe, FastText). Captures semantic similarity.
+
+**Sentence Embeddings** - BERT, Sentence-BERT for full text representation.
+
+### Temporal Features
+
+**Date Components** - Year, month, day, day_of_week, hour, quarter.
+
+**Cyclical Encoding** - Sin/cos transformation for cyclic features. hour_sin = sin(2π * hour / 24).
+
+**Time Since Event** - Days since last purchase, hours since signup.
+
+**Time-Based Aggregations** - Rolling windows (7-day average), expanding windows (all-time total).
+
+**Lag Features** - Previous values (t-1, t-7, t-30) for time-series.
+
+### Aggregation Features
+
+**Group Statistics** - Per-entity aggregations: user_avg_purchase_amount, product_total_views.
+
+**Cross-Feature Aggregations** - user_purchases_per_category, merchant_transactions_by_country.
+
+**Ratio Features** - conversion_rate = purchases / views, average_basket_size = items / transactions.
+
+### Feature Scaling
+
+**Normalization (Min-Max Scaling)** - Scales to [0, 1]: x_scaled = (x - min) / (max - min). Sensitive to outliers.
+
+**Standardization (Z-score)** - Zero mean, unit variance: x_scaled = (x - mean) / std. Robust to outliers.
+
+**Robust Scaling** - Uses median and IQR: x_scaled = (x - median) / IQR. Very robust to outliers.
+
+**Max Abs Scaling** - Scales by maximum absolute value. Preserves zero entries, useful for sparse data.
 
 ---
 
-## Continual Learning
+## Handling Imbalanced Data
 
-Model learns from stream of tasks/data over time. Challenges: catastrophic forgetting (new task overwrites old knowledge), task boundaries may be unknown.
+Class imbalance occurs when one class significantly outnumbers others. Common in fraud detection (99% legitimate, 1% fraud), medical diagnosis, anomaly detection.
 
-### Strategies
+### Evaluation Metrics for Imbalanced Data
 
-**Regularization-Based** - Penalizes changes to important parameters from previous tasks.
+**Accuracy Paradox** - High accuracy misleading with imbalance. Model predicting all negative achieves 99% accuracy on 99:1 dataset but useless.
 
-**Elastic Weight Consolidation (EWC)** - Computes parameter importance (Fisher Information) after each task. Adds regularization term penalizing changes to important parameters. Less important parameters free to adapt.
+**Better Metrics:**
+- Precision: TP / (TP + FP) - Of predicted positives, how many correct?
+- Recall: TP / (TP + FN) - Of actual positives, how many caught?
+- F1-Score: Harmonic mean of precision and recall
+- AUC-ROC: Area Under Receiver Operating Characteristic curve
+- AUC-PR: Area Under Precision-Recall curve (better for severe imbalance)
 
-**Synaptic Intelligence** - Tracks parameter importance online during training. Importance based on contribution to loss reduction.
+### Resampling Techniques
 
-**Memory-Based (Replay)** - Stores subset of old task data. Replays during new task training. Prevents forgetting by interleaving old and new data.
+**Random Undersampling** - Removes majority class samples. Simple but loses information. Risk: discards potentially useful data.
 
-**Experience Replay** - Stores raw samples from previous tasks. Randomly samples from memory during training.
+**Random Oversampling** - Duplicates minority class samples. Risk: overfitting to specific minority examples.
 
-**Generative Replay** - Trains generative model on previous tasks. Generates pseudo-samples instead of storing real ones. More memory-efficient.
+**SMOTE (Synthetic Minority Over-sampling Technique)** - Creates synthetic minority samples by interpolating between existing minority samples. For each minority sample, finds k nearest neighbors, randomly selects one, creates new sample along line between them.
 
-**Parameter Isolation** - Allocates separate parameters for each task.
+**ADASYN (Adaptive Synthetic Sampling)** - Extension of SMOTE. Generates more synthetic samples for minority samples that are harder to learn (near decision boundary).
 
-**Progressive Neural Networks** - Adds new column (sub-network) per task. Previous columns frozen. New column can use features from previous via lateral connections.
+**Tomek Links** - Identifies and removes pairs of opposite-class samples that are close together. Cleans overlap between classes.
 
-**PackNet** - Trains on first task. Prunes less important weights. "Packs" second task into remaining capacity. Iterates for more tasks.
+**Edited Nearest Neighbors (ENN)** - Removes majority samples whose class differs from majority of k nearest neighbors. Cleans noisy majority samples.
 
-**Dynamic Architectures** - Grows network as needed. Dynamically Expandable Network (DEN) adds neurons when capacity saturated. Selective retraining updates relevant parameters.
+**Combination Approaches** - SMOTE + Tomek or SMOTE + ENN. Oversample minority then clean overlap.
 
-**Task-Specific Heads** - Shared feature extractor, task-specific output layers. Requires task identity at test time.
+### Algorithmic Approaches
 
-### Continual Learning Metrics
+**Class Weights** - Assigns higher penalty to misclassifying minority class. Most algorithms support class_weight parameter. Auto-balancing: weight = n_samples / (n_classes * class_count).
 
-**Average Accuracy** - Mean accuracy across all tasks after learning all tasks.
+**Threshold Moving** - Adjusts decision threshold based on business cost. Default 0.5 may not be optimal for imbalanced data.
 
-**Forgetting** - Difference between peak accuracy on task and final accuracy after learning subsequent tasks. Measures catastrophic forgetting.
+**Ensemble Methods** - Combine multiple models trained on different balanced subsets.
 
-**Forward Transfer** - Performance on new task benefiting from previous learning. Positive: new task learns faster. Negative: previous learning hurts.
+**BalancedBagging** - Undersamples majority class for each ensemble member.
 
-**Backward Transfer** - How learning new task affects previous task performance. Positive: new learning improves old tasks. Negative: new learning degrades old tasks.
+**BalancedRandomForest** - Balances bootstrap samples when building trees.
+
+**EasyEnsemble** - Creates multiple balanced subsets, trains classifier on each, aggregates predictions.
+
+**Anomaly Detection Approaches** - For extreme imbalance (99.9% negative), treat as anomaly detection. One-Class SVM, Isolation Forest, Autoencoders.
+
+---
+
+## Data Versioning
+
+### Why Version Data
+
+**Reproducibility** - Retrain model with exact same data.
+
+**Debugging** - Identify which data version caused model degradation.
+
+**Compliance** - Audit trail for regulated industries.
+
+**Experimentation** - Compare model trained on different data versions.
+
+### Data Versioning Strategies
+
+**Snapshot Versioning** - Store complete copy at each version. Simple but storage-intensive. Suitable for small datasets.
+
+**Delta/Incremental Versioning** - Store only changes between versions. Storage-efficient. Used by Git-like systems (DVC, lakeFS).
+
+**Hash-Based Versioning** - Content-addressable storage. Same content, same hash. Deduplicates automatically.
+
+**Time-Based Versioning** - Query data as it existed at specific timestamp. Requires temporal tables or append-only logs.
+
+### Data Versioning Tools
+
+**DVC (Data Version Control)** - Git-like interface for data. Stores data remotely (S3, GCS), tracks with Git. Commands: dvc add, dvc push, dvc pull. Integrates with ML pipelines.
+
+**lakeFS** - Git for data lakes. Provides branches, commits, merges for data. ACID guarantees. Format-agnostic (Parquet, CSV, images).
+
+**Delta Lake** - ACID transactions on data lakes. Time travel via versioning. Handles schema evolution. Built on Parquet.
+
+**Pachyderm** - Data versioning with pipeline automation. Provenance tracking. Containerized data transformations.
+
+### Best Practices
+
+**Version Datasets, Not Individual Files** - Version logical dataset (all files for training) not individual files.
+
+**Immutable Data** - Never modify versioned data. Create new version instead.
+
+**Semantic Versioning** - Major.Minor.Patch. Major: breaking changes, Minor: backward-compatible additions, Patch: bug fixes.
+
+**Metadata Tracking** - Record schema, row count, statistics, data quality metrics per version.
+
+**Automatic Snapshotting** - Version data automatically when pipeline runs. Link model to data version used for training.
