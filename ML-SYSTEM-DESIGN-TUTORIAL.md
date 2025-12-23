@@ -131,1164 +131,321 @@ According to Google's research, only 5-10% of a production ML system is actual M
 | **Versioning** | Code versions | Code + data + model versions |
 | **Failures** | Binary (works/breaks) | Gradual quality degradation |
 | **Dependencies** | Libraries, services | Libraries + services + data + models |
-
-## Key Principles
-
-### 1. Data-Centric Mindset
-**The quality of your model is bounded by the quality of your data.**
-
-```python
-# Bad: Focus only on model
-model = ComplexNeuralNet(layers=50)
-model.fit(messy_data)  # Garbage in, garbage out
-
-# Good: Focus on data quality first
-cleaned_data = validate_and_clean(raw_data)
-engineered_features = create_features(cleaned_data)
-model = SimpleModel()  # Often simpler is better
-model.fit(engineered_features)
-```
-
-### 2. Start Simple, Then Optimize
-**Deploy a simple baseline quickly, then iterate.**
-
-```
-Week 1: Simple logistic regression (baseline)
-Week 2: Deploy to 5% traffic
-Week 3: Analyze errors, improve features
-Week 4: Try gradient boosting
-Week 5: Gradual rollout
-```
-
-Don't spend months building a perfect model that nobody uses.
-
-### 3. Monitor Everything
-**What gets measured gets managed.**
-
-Essential metrics:
-- **Model Performance**: Accuracy, precision, recall, AUC
-- **Data Quality**: Missing values, outliers, distribution shifts
-- **Operational**: Latency, throughput, error rates
-- **Business**: Revenue impact, user engagement
-
-### 4. Design for Failure
-**Models degrade. Plan for it.**
-
-- Implement fallback mechanisms
-- Version all components
-- Enable quick rollbacks
-- Monitor for drift
-- Automate retraining
-
-### 5. Reproducibility is Critical
-**Science requires repeatability.**
-
-Version and track:
-- Training data (checksums, versions)
-- Code (git commits)
-- Dependencies (requirements.txt, Dockerfiles)
-- Hyperparameters
-- Random seeds
-- Training environment
-
----
-
 # Chapter I: ML Architecture Fundamentals
 
 ## Machine Learning Pipeline
 
-A production ML pipeline automates the end-to-end process from data ingestion to model deployment.
+An ML pipeline automates the complete workflow from raw data to production predictions. It encompasses data ingestion, feature engineering, model training, deployment, and monitoring with built-in version control and reproducibility.
 
-### Core Pipeline Stages
+**Core Components:**
 
-```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────┐
-│   Data      │───▶│    Data      │───▶│   Feature   │───▶│  Model   │
-│  Ingestion  │    │  Validation  │    │ Engineering │    │ Training │
-└─────────────┘    └──────────────┘    └─────────────┘    └──────────┘
-                                                                  │
-                                                                  ▼
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────┐
-│   Monitor   │◀───│    Deploy    │◀───│  Validate   │◀───│ Evaluate │
-│  & Retrain  │    │    Model     │    │    Model    │    │  Model   │
-└─────────────┘    └──────────────┘    └─────────────┘    └──────────┘
-```
+**Data Ingestion** - Extracts data from sources (databases, APIs, streams), validates schemas, performs initial quality checks, and routes to storage. Must be idempotent to enable safe retries.
 
-### 1. Data Ingestion
+**Data Processing** - Transforms raw data into model-ready features through cleaning, normalization, encoding, and aggregation. Critical requirement: identical transformation logic for training and serving to prevent training-serving skew.
 
-**Batch Ingestion** (Scheduled loads):
-```python
-# Daily batch ingestion with Airflow
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from datetime import datetime, timedelta
+**Training Layer** - Manages experiments, hyperparameter optimization, distributed training, and model validation. Tracks all metadata (data versions, hyperparameters, metrics) for reproducibility.
 
-def ingest_daily_data(**context):
-    execution_date = context['execution_date']
-    
-    # Extract from source
-    df = extract_from_database(
-        start_date=execution_date,
-        end_date=execution_date + timedelta(days=1)
-    )
-    
-    # Validate schema
-    validate_schema(df, expected_schema)
-    
-    # Store
-    df.to_parquet(f's3://data/raw/date={execution_date}/data.parquet')
+**Model Registry** - Central repository storing model artifacts, metadata, lineage, and deployment status. Implements versioning and lifecycle management (experimental → validated → staging → production → archived).
 
-dag = DAG(
-    'daily_ingestion',
-    schedule_interval='@daily',
-    start_date=datetime(2024, 1, 1)
-)
+**Serving Layer** - Deploys models for inference with load balancing, request batching, caching, and monitoring. Optimized for latency and throughput requirements.
 
-ingest_task = PythonOperator(
-    task_id='ingest',
-    python_callable=ingest_daily_data,
-    provide_context=True,
-    dag=dag
-)
-```
+**Monitoring Layer** - Tracks model performance, data quality, system health, and detects drift. Triggers alerts and automated retraining when degradation occurs.
 
-**Streaming Ingestion** (Real-time):
-```python
-# Kafka streaming ingestion
-from kafka import KafkaConsumer
-import json
+**Pipeline Orchestration** uses Directed Acyclic Graphs (DAGs) where nodes represent processing steps and edges represent dependencies. Orchestration systems handle scheduling, retry logic, resource allocation, and parallel execution. Every run logs comprehensive metadata: data versions, code commits, hyperparameters, metrics, and execution timing.
 
-consumer = KafkaConsumer(
-    'transactions',
-    bootstrap_servers=['localhost:9092'],
-    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    auto_offset_reset='earliest',
-    enable_auto_commit=True
-)
-
-for message in consumer:
-    transaction = message.value
-    
-    # Validate
-    if validate_transaction(transaction):
-        # Process and store
-        store_transaction(transaction)
-        
-        # Trigger real-time feature update
-        update_features(transaction['user_id'])
-```
-
-### 2. Data Validation
-
-Catch data quality issues early:
-
-```python
-# Using Great Expectations
-import great_expectations as ge
-
-def validate_data(df):
-    df_ge = ge.from_pandas(df)
-    
-    # Schema validation
-    df_ge.expect_column_to_exist("transaction_id")
-    df_ge.expect_column_to_exist("amount")
-    df_ge.expect_column_to_exist("user_id")
-    
-    # Value validation
-    df_ge.expect_column_values_to_not_be_null("transaction_id")
-    df_ge.expect_column_values_to_be_between("amount", min_value=0, max_value=1000000)
-    df_ge.expect_column_values_to_be_of_type("user_id", "int")
-    
-    # Distribution checks
-    df_ge.expect_column_mean_to_be_between("amount", min_value=10, max_value=1000)
-    df_ge.expect_column_stdev_to_be_between("amount", min_value=5, max_value=500)
-    
-    results = df_ge.validate()
-    
-    if not results["success"]:
-        raise ValueError(f"Data validation failed: {results}")
-    
-    return df
-```
-
-### 3. Feature Engineering
-
-Transform raw data into model-ready features:
-
-```python
-def engineer_features(transactions_df, users_df):
-    """
-    Create features from raw transactions
-    """
-    
-    # Temporal features
-    transactions_df['hour_of_day'] = transactions_df['timestamp'].dt.hour
-    transactions_df['day_of_week'] = transactions_df['timestamp'].dt.dayofweek
-    transactions_df['is_weekend'] = transactions_df['day_of_week'].isin([5, 6])
-    
-    # Aggregation features (user level)
-    user_agg = transactions_df.groupby('user_id').agg({
-        'amount': ['mean', 'std', 'min', 'max', 'sum'],
-        'transaction_id': 'count'
-    }).reset_index()
-    
-    user_agg.columns = [
-        'user_id',
-        'avg_transaction_amount',
-        'std_transaction_amount',
-        'min_transaction_amount',
-        'max_transaction_amount',
-        'total_spent',
-        'transaction_count'
-    ]
-    
-    # Recency features
-    latest_transaction = transactions_df.groupby('user_id')['timestamp'].max().reset_index()
-    latest_transaction['days_since_last_transaction'] = (
-        pd.Timestamp.now() - latest_transaction['timestamp']
-    ).dt.days
-    
-    # Combine features
-    features = transactions_df.merge(user_agg, on='user_id')
-    features = features.merge(latest_transaction[['user_id', 'days_since_last_transaction']], on='user_id')
-    features = features.merge(users_df, on='user_id')
-    
-    return features
-```
-
-### 4. Model Training
-
-```python
-import mlflow
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-
-def train_model(features_df, target_col):
-    """
-    Train and log model with MLflow
-    """
-    
-    # Split data
-    X = features_df.drop([target_col, 'transaction_id', 'user_id', 'timestamp'], axis=1)
-    y = features_df[target_col]
-    
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=42
-    )
-    
-    # Start MLflow run
-    with mlflow.start_run():
-        # Train model
-        model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=10,
-            min_samples_split=50,
-            random_state=42
-        )
-        model.fit(X_train, y_train)
-        
-        # Evaluate
-        train_score = model.score(X_train, y_train)
-        test_score = model.score(X_test, y_test)
-        
-        # Log parameters
-        mlflow.log_param("n_estimators", 100)
-        mlflow.log_param("max_depth", 10)
-        mlflow.log_param("training_samples", len(X_train))
-        
-        # Log metrics
-        mlflow.log_metric("train_accuracy", train_score)
-        mlflow.log_metric("test_accuracy", test_score)
-        
-        # Log model
-        mlflow.sklearn.log_model(model, "model")
-        
-        return model
-```
-
-### 5. Model Deployment
-
-**Containerized Deployment**:
-```dockerfile
-# Dockerfile for model serving
-FROM python:3.10-slim
-
-WORKDIR /app
-
-# Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy model and code
-COPY model/ ./model/
-COPY serve.py .
-
-# Expose port
-EXPOSE 8000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Run server
-CMD ["uvicorn", "serve:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-**Serving API**:
-```python
-# serve.py
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import mlflow.pyfunc
-import pandas as pd
-
-app = FastAPI()
-
-# Load model at startup
-model = None
-
-@app.on_event("startup")
-async def load_model():
-    global model
-    model = mlflow.pyfunc.load_model("model/")
-
-class PredictionRequest(BaseModel):
-    features: dict
-
-class PredictionResponse(BaseModel):
-    prediction: float
-    probability: float
-
-@app.post("/predict", response_model=PredictionResponse)
-async def predict(request: PredictionRequest):
-    try:
-        # Convert to DataFrame
-        input_df = pd.DataFrame([request.features])
-        
-        # Predict
-        prediction = model.predict(input_df)[0]
-        probability = model.predict_proba(input_df)[0][1]
-        
-        return PredictionResponse(
-            prediction=float(prediction),
-            probability=float(probability)
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/health")
-async def health():
-    return {"status": "healthy", "model_loaded": model is not None}
-```
-
-### Pipeline Orchestration
-
-**Kubeflow Pipelines**:
-```python
-from kfp import dsl
-from kfp.components import create_component_from_func
-
-@create_component_from_func
-def ingest_data(output_path: str):
-    # Data ingestion logic
-    pass
-
-@create_component_from_func
-def validate_data(input_path: str, output_path: str):
-    # Validation logic
-    pass
-
-@create_component_from_func
-def train_model(input_path: str, model_output_path: str):
-    # Training logic
-    pass
-
-@dsl.pipeline(
-    name='ML Training Pipeline',
-    description='End-to-end ML pipeline'
-)
-def ml_pipeline():
-    # Define pipeline
-    ingest_op = ingest_data(output_path='/data/raw')
-    
-    validate_op = validate_data(
-        input_path=ingest_op.outputs['output_path'],
-        output_path='/data/validated'
-    )
-    
-    train_op = train_model(
-        input_path=validate_op.outputs['output_path'],
-        model_output_path='/models/latest'
-    )
-```
+---
 
 ## Training vs Inference
 
-### Training Characteristics
+### Training Phase
 
-**High Compute, Low Frequency**:
-- Runs periodically (daily, weekly)
-- Uses powerful GPU clusters
-- Processes entire datasets
-- Requires gradient computation
-- Can take hours to days
+**Computational Characteristics:**
 
-**Example Training Setup**:
-```python
-# Distributed training with PyTorch DDP
-import torch
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
+Training is throughput-oriented, processing large batches (32-512+ samples) to maximize GPU utilization. Requires GPUs/TPUs for parallel matrix operations. Jobs run for hours to weeks. Memory bandwidth is often the bottleneck.
 
-def train_distributed():
-    # Initialize process group
-    dist.init_process_group(backend='nccl')
-    
-    # Create model and move to GPU
-    model = MyLargeModel().cuda()
-    model = DDP(model)
-    
-    # Training loop
-    for epoch in range(num_epochs):
-        for batch in train_dataloader:
-            inputs, labels = batch
-            inputs, labels = inputs.cuda(), labels.cuda()
-            
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+**Memory Consumption:**
 
-# Launch with: torchrun --nproc_per_node=8 train.py
-```
+Total memory = Model Parameters + Gradients + Optimizer States + Activations + Batch Data
 
-### Inference Characteristics
+For a 1B parameter model with Adam optimizer:
+- Parameters: 4GB (float32)
+- Gradients: 4GB (same size as parameters)
+- Optimizer states: 8GB (2x parameters for Adam's momentum and variance)
+- Activations: 8-16GB (grows with batch size and depth)
+- Total: ~24-32GB
 
-**Low Compute, High Frequency**:
-- Runs continuously (24/7)
-- Uses CPUs or single GPU
-- Processes individual requests
-- No gradients needed
-- Must be < 100ms typically
+**Optimization Techniques:**
 
-**Optimized Inference**:
-```python
-# TorchScript for production inference
-import torch
+**Mixed Precision Training** - Uses float16 for computation and float32 for accumulation. Reduces memory by ~50% and speeds up training on modern GPUs with tensor cores. Applies loss scaling to prevent underflow.
 
-class OptimizedModel(torch.nn.Module):
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-        self.model.eval()
-    
-    @torch.jit.export
-    def predict(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            return self.model(x)
+**Gradient Checkpointing** - Trades computation for memory by not storing all activations. Recomputes activations during backward pass. Enables training larger models or bigger batches at cost of ~30% slower training.
 
-# Compile model
-model = MyModel()
-optimized = OptimizedModel(model)
-traced = torch.jit.script(optimized)
+**Distributed Training** - Splits work across multiple devices:
+- Data Parallelism: Different devices process different data batches with same model
+- Model Parallelism: Different devices hold different model parts
+- Pipeline Parallelism: Splits model into stages, each on different device
+- ZeRO (Zero Redundancy Optimizer): Partitions optimizer states, gradients, and parameters across devices
 
-# Save
-traced.save("optimized_model.pt")
+**Gradient Accumulation** - Simulates larger batches by accumulating gradients over multiple forward-backward passes before updating weights. Useful when memory limits batch size.
 
-# Load and use
-loaded_model = torch.jit.load("optimized_model.pt")
-prediction = loaded_model.predict(input_tensor)
-```
+**Learning Rate Scheduling** - Adjusts learning rate during training:
+- Warm-up: Gradually increases LR from zero to avoid early instability
+- Cosine Annealing: Smoothly decreases LR following cosine curve
+- Step Decay: Reduces LR at fixed intervals
+- ReduceLROnPlateau: Decreases when metrics plateau
 
-### Training-Serving Skew
+### Inference Phase
 
-**Common Sources**:
+**Computational Characteristics:**
 
-1. **Different preprocessing**:
-```python
-# BAD: Different preprocessing in training vs serving
-# Training (Python/Pandas)
-df['normalized_amount'] = (df['amount'] - df['amount'].mean()) / df['amount'].std()
+Latency-oriented, processing single samples or small batches (1-32). Often runs on CPUs with optimizations. Latency ranges from <10ms (ad serving) to seconds (content moderation) depending on use case.
 
-# Serving (Different implementation)
-normalized = (amount - HARDCODED_MEAN) / HARDCODED_STD  # Wrong if data changes!
-```
+**Memory:** Only needs model parameters and current batch activations. Same 1B parameter model requires 4GB (float32) or 2GB (float16) or 0.5GB (int8 quantized) plus 100MB-1GB activations. Total can be <1GB with optimizations.
 
-**Solution**: Use same codebase:
-```python
-# GOOD: Shared preprocessing
-from sklearn.preprocessing import StandardScaler
-import joblib
+**Inference Optimization Techniques:**
 
-# Training
-scaler = StandardScaler()
-train_features = scaler.fit_transform(train_data)
-joblib.dump(scaler, 'scaler.pkl')
+**Quantization** - Reduces numerical precision of weights and activations:
+- Post-Training Quantization: Converts trained float32 model to int8 without retraining. Simple but slight accuracy loss.
+- Quantization-Aware Training: Simulates quantization during training for better accuracy. Model learns to be robust to reduced precision.
+- Dynamic Quantization: Quantizes weights ahead of time, activations dynamically at runtime.
+- Common formats: int8 (4x smaller), int4 (8x smaller), mixed-precision (critical layers stay float16)
 
-# Serving
-scaler = joblib.load('scaler.pkl')
-inference_features = scaler.transform(new_data)  # Same transformation!
-```
+**Pruning** - Removes unnecessary model parameters:
+- Unstructured Pruning: Removes individual weights below threshold. High compression but requires specialized hardware.
+- Structured Pruning: Removes entire neurons, filters, or attention heads. Lower compression but efficient on standard hardware.
+- Magnitude-based: Prunes smallest weights
+- Iterative Pruning: Gradually increases sparsity with fine-tuning between steps
 
-2. **Feature computation differences**:
-```python
-# BAD: Complex feature logic duplicated
-# Training: SQL query aggregates
-# Serving: Application code aggregates
-# Slight differences cause skew!
-```
+**Knowledge Distillation** - Trains smaller "student" model to mimic larger "teacher". Student learns from teacher's soft predictions (probability distributions) not just hard labels. Captures dark knowledge - nuanced decision boundaries teacher learned. Typical compression: 10-100x smaller with <5% accuracy loss.
 
-**Solution**: Use Feature Store:
-```python
-# Training and serving use same feature store
-from feast import FeatureStore
+**Operator Fusion** - Combines multiple operations into single kernel. Example: Fusing matrix multiplication + bias addition + activation into one GPU kernel. Reduces memory transfers between operations.
 
-store = FeatureStore("feature_repo/")
+**KV-Cache Optimization** - For autoregressive models (GPT, LLama):
+- Problem: Each new token generation requires recomputing attention over all previous tokens
+- Solution: Cache key and value matrices from previous tokens
+- Memory trade-off: Stores KV cache (grows with sequence length) to avoid redundant computation
+- Multi-Query Attention (MQA): Shares key/value heads across attention heads to reduce KV cache size
+- Grouped-Query Attention (GQA): Middle ground between full and multi-query attention
 
-# Training
-training_features = store.get_historical_features(
-    entity_df=entity_df,
-    features=["user_features:avg_purchase_amount"]
-)
+**Batch Inference** - Groups multiple requests. Dynamic Batching accumulates requests arriving within time window. Increases throughput significantly on GPUs. Adaptive batch sizing based on model, hardware, and latency requirements.
 
-# Serving
-online_features = store.get_online_features(
-    features=["user_features:avg_purchase_amount"],
-    entity_rows=[{"user_id": 123}]
-)
-```
+**Model Compilation** - Optimizes model graph by fusing operators, removing redundant computations, optimizing memory allocation, and generating hardware-specific code (TensorRT for NVIDIA, OpenVINO for Intel).
 
-## Batch, Real-time & Streaming
+**Early Exit** - Adds intermediate classifiers. Simple inputs exit early from shallow layers while complex inputs use full model depth. Reduces average inference time while maintaining accuracy.
 
-### Batch Inference
+---
 
-**When to use**: Large volumes, no latency requirements
+## Batch, Real-time, and Streaming Processing
 
-```python
-# Spark batch inference
-from pyspark.sql import SparkSession
-import mlflow
+### Batch Processing
 
-spark = SparkSession.builder.appName("BatchInference").getOrCreate()
+Processes complete datasets accumulated over time windows. Data collected then processed all at once, typically scheduled (hourly/daily/weekly).
 
-# Load model
-model = mlflow.spark.load_model("models:/fraud_detector/production")
+**Characteristics:** High latency (hours to days), high throughput (petabytes), complete view, cost-effective (spot instances, off-peak processing).
 
-# Load data
-data = spark.read.parquet("s3://data/transactions/2024-01/")
+**Use Cases:** Model training on historical data, customer lifetime value, daily product recommendations, segmentation models, bulk scoring for campaigns.
 
-# Batch predict
-predictions = model.transform(data)
+### Real-Time Processing
 
-# Write results
-predictions.select("transaction_id", "prediction", "probability")\
-    .write.mode("overwrite")\
-    .parquet("s3://predictions/2024-01/")
-```
+Handles individual requests synchronously with immediate responses (milliseconds to seconds).
 
-**Cost optimization**:
-- Use spot instances (70% cost savings)
-- Process during off-peak hours
-- Optimize batch sizes
-- Cache models in memory
+**Characteristics:** Low latency (sub-second to seconds), request-response pattern, fresh context, always-on infrastructure.
 
-### Real-time Inference
+**Use Cases:** Fraud detection, search ranking, ad serving, chatbots, page-load recommendations, content moderation.
 
-**When to use**: Low latency required (< 100ms)
+**Latency Breakdown:** Network (5-20ms) + Feature retrieval (5-30ms) + Model inference (10-100ms) + Postprocessing (1-5ms) = Total 20-150ms typical.
 
-```python
-from fastapi import FastAPI
-import torch
+### Streaming Processing
 
-app = FastAPI()
+Processes continuous event flows with stateful computations over time windows. Combines low latency with temporal aggregation.
 
-# Load model once
-MODEL = torch.jit.load("model.pt")
-MODEL.eval()
+**Characteristics:** Near real-time (seconds), stateful, continuous, temporal context.
 
-@app.post("/predict")
-async def predict(features: dict):
-    # Preprocess
-    tensor = torch.tensor([list(features.values())])
-    
-    # Predict
-    with torch.no_grad():
-        prediction = MODEL(tensor)
-    
-    return {"prediction": prediction.item()}
+**Use Cases:** Click-through rate calculation, trending topics, continuous fraud scoring, IoT sensor analysis, real-time user profiling.
 
-# Optimize with batching
-from collections import deque
-import asyncio
+**Windowing Strategies:**
 
-request_queue = deque()
+**Tumbling Windows** - Fixed, non-overlapping intervals. Each event in exactly one window. For periodic aggregations (hourly counts, daily sums).
 
-async def batch_predictor():
-    while True:
-        if len(request_queue) >= BATCH_SIZE or time_since_last_batch > MAX_WAIT:
-            batch = [request_queue.popleft() for _ in range(min(BATCH_SIZE, len(request_queue)))]
-            predictions = MODEL(torch.stack([r['tensor'] for r in batch]))
-            
-            for request, pred in zip(batch, predictions):
-                request['future'].set_result(pred)
-        
-        await asyncio.sleep(0.001)
+**Sliding Windows** - Overlapping windows advancing incrementally. Events in multiple windows. For moving averages, continuous trends.
 
-@app.post("/predict_batched")
-async def predict_batched(features: dict):
-    future = asyncio.Future()
-    request_queue.append({'tensor': preprocess(features), 'future': future})
-    return await future
-```
+**Session Windows** - Activity-based with gaps defining boundaries. Windows adapt to behavior. For user sessions, transaction bursts.
 
-**Optimization techniques**:
-- Request batching (2-5x throughput improvement)
-- Model quantization (INT8, 4x faster)
-- TensorRT compilation (2-6x faster)
-- KV caching for transformers
-- Response caching for frequent queries
+**Event Time vs Processing Time:**
 
-### Streaming Inference
+Event time: When event actually occurred (embedded in event)
+Processing time: When system processes event
+Watermarks track event time progress, determining when windows close. Late events handled via allowed lateness or side outputs.
 
-**When to use**: Continuous data streams, window-based aggregations
+### Lambda Architecture
 
-```python
-# Flink streaming inference
-from pyflink.datastream import StreamExecutionEnvironment
-from pyflink.table import StreamTableEnvironment
+Combines batch and streaming for accuracy with low latency.
 
-env = StreamExecutionEnvironment.get_execution_environment()
-t_env = StreamTableEnvironment.create(env)
+**Components:**
+- Batch Layer: Complete historical data, accurate comprehensive results (high latency, high accuracy)
+- Speed Layer: Recent data only, approximate real-time results (low latency, eventual accuracy)
+- Serving Layer: Merges results, prioritizes speed layer for recent data
 
-# Define source
-t_env.execute_sql("""
-    CREATE TABLE transactions (
-        user_id BIGINT,
-        amount DOUBLE,
-        merchant STRING,
-        timestamp TIMESTAMP(3),
-        WATERMARK FOR timestamp AS timestamp - INTERVAL '5' SECOND
-    ) WITH (
-        'connector' = 'kafka',
-        'topic' = 'transactions',
-        'properties.bootstrap.servers' = 'localhost:9092'
-    )
-""")
+**Example:** Recommendation system uses daily batch computation of user-item affinity from all interactions plus real-time session click tracking, serving blends both.
 
-# Create features with windows
-t_env.execute_sql("""
-    CREATE VIEW user_features AS
-    SELECT 
-        user_id,
-        HOP_END(timestamp, INTERVAL '1' MINUTE, INTERVAL '5' MINUTE) as window_end,
-        COUNT(*) as txn_count_5min,
-        SUM(amount) as total_spent_5min,
-        AVG(amount) as avg_amount_5min
-    FROM transactions
-    GROUP BY user_id, HOP(timestamp, INTERVAL '1' MINUTE, INTERVAL '5' MINUTE)
-""")
-
-# Apply model (registered UDF)
-t_env.execute_sql("""
-    INSERT INTO fraud_predictions
-    SELECT 
-        user_id,
-        detect_fraud(txn_count_5min, total_spent_5min, avg_amount_5min) as is_fraud,
-        window_end
-    FROM user_features
-    WHERE detect_fraud(txn_count_5min, total_spent_5min, avg_amount_5min) = TRUE
-""")
-```
+---
 
 ## Model Serving Patterns
 
-### 1. Model-as-Service
+### Embedded Model
 
-**Architecture**:
-```
-Client → Load Balancer → [Service Instance 1]
-                       → [Service Instance 2]
-                       → [Service Instance N]
-```
+Model packaged within application, loaded at startup, inference in-process.
 
-**Implementation with BentoML**:
-```python
-import bentoml
-from bentoml.io import JSON
+**When to Use:** Mobile apps (TensorFlow Lite, ONNX Runtime), edge devices, microservices needing <1ms latency, privacy-sensitive applications, offline functionality.
 
-# Create service
-svc = bentoml.Service("fraud_detector")
+**Advantages:** Zero network latency, offline capability, complete privacy, simple deployment, no separate servers.
 
-# Load model
-fraud_model = bentoml.pytorch.get("fraud_model:latest")
+**Limitations:** Model size constraints, updates require app redeployment, resource competition, difficult A/B testing.
 
-@svc.api(input=JSON(), output=JSON())
-def predict(input_data):
-    # Preprocess
-    features = preprocess(input_data)
-    
-    # Predict
-    prediction = fraud_model.run(features)
-    
-    return {
-        "is_fraud": bool(prediction > 0.5),
-        "fraud_score": float(prediction),
-        "model_version": fraud_model.tag.version
-    }
+### Model as Service
 
-# Deploy
-# bentoml serve service.py:svc --production
-```
+Models deployed as independent services accessed via REST/gRPC APIs.
 
-**Kubernetes deployment**:
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: fraud-detector
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: fraud-detector
-  template:
-    metadata:
-      labels:
-        app: fraud-detector
-    spec:
-      containers:
-      - name: model-server
-        image: myregistry/fraud-detector:v1.0
-        ports:
-        - containerPort: 3000
-        resources:
-          requests:
-            memory: "2Gi"
-            cpu: "1"
-          limits:
-            memory: "4Gi"
-            cpu: "2"
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: 3000
-          initialDelaySeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 3000
+**When to Use:** Multiple applications share model, complex models need GPUs, frequent model updates, sophisticated monitoring, A/B testing, high-traffic scenarios.
+
+**Advantages:** Independent scaling, easy updates, shared expensive hardware, centralized monitoring, version control, canary deployments.
+
+**Limitations:** Network latency (5-50ms), operational complexity, potential single point of failure, infrastructure costs.
+
+**Optimization Techniques:**
+
+**Dynamic Batching** - Accumulates requests within timeout window (e.g., 10ms), processes as batch. Increases GPU throughput. Trade-off: Slight latency for better efficiency.
+
+**Model Warmup** - Pre-loads model and runs dummy predictions before traffic. Avoids cold-start latency.
+
+**Multi-Model Serving** - Single server hosts multiple models, shares resources. For A/B testing or ensembles.
+
+**Prediction Caching** - Stores results for duplicate requests with TTL. Effective for popular queries.
+
+### Batch Serving
+
+Precomputes predictions for known entities, stores in database, serves via lookup.
+
+**When to Use:** Finite entity set (all users/products), staleness tolerable (hours/days), expensive inference, predictable requests.
+
+**Use Cases:** Daily user recommendations, monthly churn predictions, email engagement scoring, content pre-ranking.
+
+**Advantages:** Ultra-low serving latency (1-5ms lookup), cost-effective computation amortization, simple infrastructure, enables prediction review.
+
+**Limitations:** Stale predictions, storage requirements, cannot handle new entities immediately, wasted computation for unused predictions.
+
+**Hybrid Pattern:** Batch provides baseline (daily updates) + Real-time adjusts for current session = Final score combines both (e.g., 0.7 * batch + 0.3 * realtime).
+
+### Streaming Serving
+
+Models process event streams, enriching events with predictions real-time.
+
+**When to Use:** Events need ML enrichment, real-time fraud/anomaly detection, event-driven architectures, requires temporal context.
+
+**Use Cases:** Transaction fraud scoring, live stream content moderation, IoT predictive maintenance, ad bidding, network security monitoring.
+
+**State Management:** Processor maintains feature state (e.g., user's last 10 transactions). State in embedded databases (RocksDB) with periodic checkpointing. Enables stateful features like running averages, distinct counts, sequence patterns.
+
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: fraud-detector-service
-spec:
-  selector:
-    app: fraud-detector
-  ports:
-  - port: 80
-    targetPort: 3000
-  type: LoadBalancer
-```
-
-### 2. Embedded Model
-
-**When to use**: Mobile apps, edge devices, latency-critical
-
-```python
-# Convert to ONNX for cross-platform deployment
-import torch.onnx
-
-# PyTorch model
-model = MyModel()
-model.eval()
-
-# Export to ONNX
-dummy_input = torch.randn(1, 3, 224, 224)
-torch.onnx.export(
-    model,
-    dummy_input,
-    "model.onnx",
-    export_params=True,
-    opset_version=13,
-    input_names=['input'],
-    output_names=['output'],
-    dynamic_axes={
-        'input': {0: 'batch_size'},
-        'output': {0: 'batch_size'}
-    }
-)
-
-# Load with ONNX Runtime (C++, Python, JavaScript, etc.)
-import onnxruntime as ort
-
-session = ort.InferenceSession("model.onnx")
-input_name = session.get_inputs()[0].name
-
-prediction = session.run(None, {input_name: input_data.numpy()})
-```
-
-**Mobile deployment (TensorFlow Lite)**:
-```python
-import tensorflow as tf
-
-# Convert to TFLite
-converter = tf.lite.TFLiteConverter.from_keras_model(model)
-converter.optimizations = [tf.lite.Optimize.DEFAULT]  # Quantize
-tflite_model = converter.convert()
-
-# Save
-with open('model.tflite', 'wb') as f:
-    f.write(tflite_model)
-
-# Use in mobile app (pseudo-code)
-# Android/iOS:
-# interpreter = Interpreter("model.tflite")
-# interpreter.allocateTensors()
-# interpreter.setInput(inputData)
-# interpreter.run()
-# output = interpreter.getOutput()
-```
-
-### 3. Serverless Inference
-
-**AWS Lambda example**:
-```python
-import json
-import boto3
-import numpy as np
-import onnxruntime as ort
-
-# Global model (loaded once per container)
-SESSION = None
-
-def load_model():
-    global SESSION
-    if SESSION is None:
-        s3 = boto3.client('s3')
-        s3.download_file('my-models', 'model.onnx', '/tmp/model.onnx')
-        SESSION = ort.InferenceSession('/tmp/model.onnx')
-    return SESSION
-
-def lambda_handler(event, context):
-    try:
-        # Load model
-        session = load_model()
-        
-        # Parse input
-        body = json.loads(event['body'])
-        input_data = np.array(body['features'], dtype=np.float32).reshape(1, -1)
-        
-        # Predict
-        input_name = session.get_inputs()[0].name
-        prediction = session.run(None, {input_name: input_data})[0]
-        
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'prediction': float(prediction[0]),
-                'latency_ms': context.get_remaining_time_in_millis()
-            })
-        }
-    except Exception as e:
-        return {
-            'statusCode': 500,
-            'body': json.dumps({'error': str(e)})
-        }
-```
-
-**Cold start optimization**:
-- Keep model small (< 250MB for Lambda)
-- Use provisioned concurrency for critical paths
-- Optimize container images
-- Lazy load only what's needed
-
-### Comparison
-
-| Pattern | Latency | Cost | Scalability | Use Case |
-|---------|---------|------|-------------|----------|
-| Model-as-Service | 10-50ms | Medium | High | General serving |
-| Embedded | < 5ms | Low | Medium | Mobile, edge |
-| Serverless | 50-200ms | Very Low* | Very High | Sporadic traffic |
-
-*Pay per use, cost-effective for <10% utilization
 
 ## Feature Stores
 
-A feature store solves the critical problem of consistent features between training and serving.
+Centralized repository managing ML features, solving training-serving skew by ensuring consistent feature computation across training and inference.
 
-### Architecture
+### Core Problem: Training-Serving Skew
 
-```
-┌──────────────────────────────────────────────────────┐
-│                  Feature Store                        │
-├───────────────┬────────────────┬────────────────────┤
-│ Offline Store │  Online Store  │  Feature Registry  │
-│ (Training)    │  (Serving)     │  (Metadata)        │
-│               │                │                     │
-│ - BigQuery    │  - Redis       │  - Definitions     │
-│ - Snowflake   │  - DynamoDB    │  - Lineage         │
-│ - S3+Parquet  │  - Cassandra   │  - Schemas         │
-│ - Time travel │  - Low latency │  - Documentation   │
-└───────────────┴────────────────┴────────────────────┘
-```
+Features computed differently during training (Python/Pandas) vs serving (Java/Go) cause model degradation despite good offline metrics. Feature Store uses identical transformation logic for both.
 
-### Feast Example
+### Architecture Components
 
-**Define features**:
-```python
-# feature_repo/features.py
-from feast import Entity, Feature, FeatureView, Field, FileSource
-from feast.types import Float64, Int64
-from datetime import timedelta
+**Feature Registry** - Catalog of feature definitions: name, type, entity, transformation logic, data sources, update schedule, owner, version.
 
-# Define entity
-user = Entity(
-    name="user",
-    join_keys=["user_id"]
-)
+**Offline Store** - Historical feature storage for training (S3, BigQuery, Hive). Point-in-time correct values. Large-scale batch reads.
 
-# Define source (offline)
-user_transactions_source = FileSource(
-    path="s3://data/user_transactions.parquet",
-    timestamp_field="timestamp"
-)
+**Online Store** - Low-latency serving storage (Redis, DynamoDB, Cassandra). Latest feature values. Single-key lookups <10ms p99.
 
-# Define feature view
-user_transaction_features = FeatureView(
-    name="user_transaction_features",
-    entities=[user],
-    ttl=timedelta(days=90),
-    schema=[
-        Field(name="total_transactions", dtype=Int64),
-        Field(name="avg_transaction_amount", dtype=Float64),
-        Field(name="total_spent", dtype=Float64),
-        Field(name="days_since_last_transaction", dtype=Int64),
-    ],
-    online=True,
-    source=user_transactions_source
-)
-```
+**Transformation Engine** - Computes features from raw data. Same code generates features for offline (training) and online (serving).
 
-**Training (get historical features)**:
-```python
-from feast import FeatureStore
-import pandas as pd
+### Point-in-Time Correctness
 
-store = FeatureStore("feature_repo/")
+Features must reflect values as they existed at each training example's timestamp, not current/future values. Prevents data leakage.
 
-# Entity dataframe (users and timestamps for training)
-entity_df = pd.read_parquet("s3://data/training_labels.parquet")
-# Columns: user_id, timestamp, label
+Example: Training example at 2024-01-15 predicting churn.
+- Correct: user_transaction_count_30d uses transactions from 2023-12-16 to 2024-01-15
+- Incorrect: Using current count includes future data, inflates offline metrics, fails in production
 
-# Get point-in-time correct features
-training_df = store.get_historical_features(
-    entity_df=entity_df,
-    features=[
-        "user_transaction_features:total_transactions",
-        "user_transaction_features:avg_transaction_amount",
-        "user_transaction_features:days_since_last_transaction"
-    ]
-).to_df()
+### Feature Types
 
-# No data leakage - features only use data available at each timestamp!
+**Batch Features** - Computed periodically (daily/hourly) from large datasets. Examples: user_total_purchases, product_avg_rating. Stored offline, synced to online.
 
-# Train model
-X = training_df.drop(['user_id', 'timestamp', 'label'], axis=1)
-y = training_df['label']
-model.fit(X, y)
-```
+**Streaming Features** - Computed real-time from event streams. Examples: user_clicks_last_hour, session_page_views. Directly updated online.
 
-**Serving (get online features)**:
-```python
-# Materialize features to online store
-store.materialize(
-    start_date=datetime(2024, 1, 1),
-    end_date=datetime(2024, 1, 15),
-    feature_views=["user_transaction_features"]
-)
-
-# Get features for real-time prediction
-online_features = store.get_online_features(
-    features=[
-        "user_transaction_features:total_transactions",
-        "user_transaction_features:avg_transaction_amount"
-    ],
-    entity_rows=[
-        {"user_id": 1001},
-        {"user_id": 1002}
-    ]
-).to_dict()
-
-# Use for prediction
-predictions = model.predict(online_features)
-```
+**On-Demand Features** - Computed at request time from context. Examples: time_since_last_login, is_weekend. Computed during serving, not stored.
 
 ### Feature Engineering Patterns
 
-**Batch features** (computed periodically):
-```python
-# Daily Spark job
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
+**Entity-Centric:** User (age, country, total_purchases), Product (category, price, rating), Transaction (amount, payment_method).
 
-spark = SparkSession.builder.appName("FeatureEngineering").getOrCreate()
+**Time-Windowed Aggregations:** user_purchases_count_7d / 30d / 90d, product_revenue_sum_24h.
 
-# Load transactions
-transactions = spark.read.parquet("s3://data/transactions/")
+**Ratio Features:** conversion_rate = purchases / views, cart_abandonment_rate = (carts - orders) / carts.
 
-# Compute aggregations
-user_features = transactions.groupBy("user_id").agg(
-    F.count("*").alias("total_transactions"),
-    F.mean("amount").alias("avg_transaction_amount"),
-    F.sum("amount").alias("total_spent"),
-    F.datediff(F.current_date(), F.max("date")).alias("days_since_last_transaction")
-)
+### Workflows
 
-# Write to offline store
-user_features.write.parquet("s3://features/user_transaction_features/")
+**Training:** Define features → Backfill historical values → Request features with entity IDs and timestamps → Point-in-time joins → Return dataset → Train model.
 
-# Materialize to online store (Redis)
-feast_client.write_to_online_store(user_features)
-```
+**Serving:** Receive request with entity IDs → Query online store (GET user:123:features) → Return in <10ms → Run inference → Return prediction.
 
-**Streaming features** (computed in real-time):
-```python
-# Flink streaming feature computation
-from pyflink.table import StreamTableEnvironment
+### Feature Versioning
 
-t_env = StreamTableEnvironment.create(env)
+Features evolve: user_ltv_v1 (sum of purchases) → v2 (purchases minus refunds) → v3 (new formula with retention). Registry tracks which model uses which feature version.
 
-# Source
-t_env.execute_sql("""
-    CREATE TABLE transactions (
-        user_id BIGINT,
-        amount DOUBLE,
-        timestamp TIMESTAMP(3),
-        WATERMARK FOR timestamp AS timestamp - INTERVAL '5' SECOND
-    ) WITH (
-        'connector' = 'kafka',
-        'topic' = 'transactions'
-    )
-""")
+### Feature Monitoring
 
-# Compute sliding window features
-t_env.execute_sql("""
-    CREATE VIEW user_recent_activity AS
-    SELECT 
-        user_id,
-        HOP_END(timestamp, INTERVAL '1' MINUTE, INTERVAL '10' MINUTE) as window_end,
-        COUNT(*) as transactions_last_10min,
-        SUM(amount) as total_spent_last_10min,
-        AVG(amount) as avg_amount_last_10min
-    FROM transactions
-    GROUP BY user_id, HOP(timestamp, INTERVAL '1' MINUTE, INTERVAL '10' MINUTE)
-""")
-
-# Write to online store (Redis)
-t_env.execute_sql("""
-    INSERT INTO redis_online_store
-    SELECT * FROM user_recent_activity
-""")
-```
-
-**On-demand features** (computed at request time):
-```python
-# Feast on-demand features
-from feast import on_demand_feature_view, Field
-from feast.types import Float64
-
-@on_demand_feature_view(
-    sources=[user_transaction_features],
-    schema=[
-        Field(name="spending_velocity", dtype=Float64),
-        Field(name="transaction_frequency", dtype=Float64)
-    ]
-)
-def derived_features(inputs: pd.DataFrame) -> pd.DataFrame:
-    output = pd.DataFrame()
-    
-    # Compute features from stored features
-    output["spending_velocity"] = (
-        inputs["total_spent"] / 
-        (inputs["days_since_last_transaction"] + 1)
-    )
-    
-    output["transaction_frequency"] = (
-        inputs["total_transactions"] / 
-        (inputs["days_since_first_transaction"] + 1)
-    )
-    
-    return output
-```
+**Data Quality:** Null rate, schema compliance, value distribution shifts.
+**Freshness:** Last update timestamp, lag from source, staleness alerts.
+**Consistency:** Online-offline comparison, training-serving parity tests.
 
 ---
 
-[CONTINUED IN PART 2...]
+## Model Registry
 
-**Note**: This tutorial continues with detailed coverage of:
-- Model Registry (MLflow, Weights & Biases)
-- Data Engineering (validation, quality, versioning)
-- Distributed Training (DDP, model parallel, FSDP)
-- LLM Systems (transformer architecture, inference optimization)
-- RAG Architectures (vector DBs, chunking, evaluation)
-- Agentic AI (ReAct, tool use, multi-agent systems)
-- Production Case Studies (fraud detection, recommendations, conversational AI)
+Central catalog managing ML model lifecycle: artifacts, metadata, versioning, lineage, deployment tracking.
 
-The complete tutorial is ~40,000 words covering every aspect of production ML systems with code examples, architectural diagrams, and battle-tested patterns from real-world deployments.
+### Core Functions
 
----
+**Model Versioning** - Semantic versioning (major.minor.patch) for each trained model. Tracks complete lineage.
 
-## Quick Reference
+**Artifact Storage** - Model files (weights, configs), preprocessing artifacts (scalers, encoders, tokenizers), postprocessing logic. Supports TensorFlow SavedModel, PyTorch, ONNX, pickle.
 
-### Essential ML Metrics
+**Metadata Management** - Training data version, feature definitions, hyperparameters, metrics (accuracy, loss curves), validation results, training duration, compute resources, framework versions, owner/team.
 
-**Classification**:
-- Accuracy: (TP + TN) / Total
-- Precision: TP / (TP + FP)
-- Recall: TP / (TP + FN)
-- F1: 2 * (Precision * Recall) / (Precision + Recall)
-- AUC-ROC: Area under ROC curve
+**Lifecycle Management** - Stages: Experimental (initial training) → Validated (passed evaluation) → Staging (test environment) → Production (live traffic) → Archived (deprecated).
 
-**Regression**:
-- MAE: Mean Absolute Error
-- RMSE: Root Mean Squared Error  
-- R²: Coefficient of determination
-- MAPE: Mean Absolute Percentage Error
+**Access Control** - Permissions for registration, stage promotion, production deployment, artifact downloads.
 
-**Ranking**:
-- NDCG: Normalized Discounted Cumulative Gain
-- MAP: Mean Average Precision
-- MRR: Mean Reciprocal Rank
+### Model Registration Workflow
 
-### Popular Frameworks
+Training completes → If metrics meet thresholds, register via API → Registry assigns version, stores artifacts (S3), records metadata → Model enters "Experimental" → Review and promote to "Validated" → Deploy to staging ("Staging") → After validation, promote to "Production" → Old production becomes "Archived".
 
-**Training**: PyTorch, TensorFlow, JAX, scikit-learn, XGBoost, LightGBM
-**Serving**: TorchServe, TensorFlow Serving, BentoML, Seldon, KServe
-**Orchestration**: Kubeflow, MLflow, Airflow, Prefect, Metaflow
-**Feature Stores**: Feast, Tecton, Hopsworks
-**Monitoring**: Evidently, Arize, WhyLabs, Fiddler
+### Lineage Tracking
 
-### Best Practices Checklist
+Maps model to training dataset (version, location, schema), feature definitions, code repository (commit hash), parent models (for fine-tuning), hyperparameters. Answers: "What data trained this?" "Which models use this feature?" "What changed between versions?"
 
-✅ Version everything (code, data, models, configs)  
-✅ Start with simple baselines  
-✅ Monitor data quality continuously  
-✅ Implement comprehensive testing  
-✅ Use feature stores for consistency  
-✅ Track experiments systematically  
-✅ Deploy with rollback capability  
-✅ Monitor for drift  
-✅ Automate retraining pipelines  
-✅ Document decisions and trade-offs  
+### Model Comparison
 
----
+Compare models across metrics (accuracy, precision, recall, F1, AUC, KPIs), latency (inference time p50/p95/p99), resource usage (memory, CPU/GPU), training cost (compute hours, cloud spend), data requirements (size, feature counts). Supports A/B testing decisions.
 
-**Repository**: [github.com/your-username/ml-system-design](https://github.com)
-**License**: MIT
-**Contributing**: Pull requests welcome!
+### Deployment Metadata
 
----
+Tracks deployment environment (staging/production/edge), deployment timestamp, traffic percentage (gradual rollouts), performance metrics (online accuracy, latency, throughput, errors), rollback status (automatic rollback if metrics degrade).
 
-*"The best ML system is the one that solves the business problem reliably at acceptable cost." - Ancient ML Wisdom*
+### Integration
+
+**Training:** Framework auto-registers models post-training via SDK/API.
+**CI/CD:** Deployment pipelines query registry for latest validated model. Automated tests before promotion.
+**Monitoring:** Production systems report metrics back. Registry tracks online vs offline divergence. Triggers retraining on degradation.
+
+### Model Cards
+
+Documentation stored in registry: model purpose, training data characteristics (size, distribution, biases), performance metrics and limitations, ethical considerations, maintenance schedule, contact information. Essential for governance, compliance, collaboration.
