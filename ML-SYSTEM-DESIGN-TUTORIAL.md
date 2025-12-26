@@ -1,7 +1,6 @@
 # Machine Learning System Design
 ### A Comprehensive Guide to Production ML, AI Architectures, and Agentic AI Systems
 
-*With 3000 years of ML engineering wisdom distilled into practical, battle-tested patterns*
 
 ---
 
